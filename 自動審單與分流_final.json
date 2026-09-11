@@ -1,0 +1,1900 @@
+{
+  "name": "自動審單與分流_final",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "客戶ID",
+        "joinMode": "enrichInput1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -960,
+        -608
+      ],
+      "id": "ecd73fe0-25a5-4e7c-b9e5-5dafa37401fe",
+      "name": "Merge_對接客戶授信"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"總處理筆數\": {{ $json.總處理筆數 }},\n  \"直通出貨_Auto\": {{ $json.直通出貨_Auto }},\n  \"人工審核_Review\": {{ $json.人工審核_Review }},\n  \"退單攔截_Reject\": {{ $json.退單攔截_Reject }},\n  \"狀態\": \"{{ $json.狀態 }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        -480,
+        512
+      ],
+      "id": "15276cad-b953-49b8-a833-23466936f120",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.決策 }}",
+                    "rightValue": "auto",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "e26c9f94-3f8d-4616-bfb2-731629d9c277"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "75f88723-030c-4808-9b85-86f4746ef720",
+                    "leftValue": "={{ $json.決策 }}",
+                    "rightValue": "review",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "b2358b7f-86a1-460b-9422-71db0c6b5c16",
+                    "leftValue": "={{ $json.決策 }}",
+                    "rightValue": "reject",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -48,
+        -208
+      ],
+      "id": "f347516d-86bb-45cb-9afb-e0c127e91476",
+      "name": "Switch_ERP履約分流"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 企業級大腦：陣列批次優化與 CEO 分級授信引擎 (V3 欄位精準對齊版) ===\n\nlet autoCount = 0;\nlet reviewCount = 0;\nlet rejectCount = 0;\nlet processedItems = [];\n\n// 1. 瞬間掃描 1,500 筆訂單大軍\nfor (let item of $input.all()) {\n    let json = item.json; \n\n    // 基礎金額與庫存計算\n    let qty = Number(json['數量']) || 0;\n    let price = Number(json['單價']) || 0;\n    let stock = Number(json['期末庫存']) || 0;\n    let safeStock = Number(json['安全庫存']) || 0;\n\n    json['訂單金額'] = qty * price;\n    json['可用庫存'] = stock - safeStock;\n\n    // 2. ⭐ CEO 級分級授信決策樹 (精準對齊 Excel 資料字典)\n    // 🔥 關鍵修復：抓取 Excel 裡正確的「信用評等」欄位！\n    let credit = json['信用評等']; \n    let orderAmount = json['訂單金額'];\n    let availableStock = json['可用庫存'];\n\n    // 如果找不到信用評等(undefined)，或是新名單，才判定為新客戶\n    if (!credit || credit === '新客戶(未授信)') {\n        json['決策'] = 'review';\n        json['攔截原因'] = '缺乏歷史交易紀錄，需進行 KYC 與信用評級';\n        reviewCount++;\n    } else if (credit === 'C') {\n        json['決策'] = 'reject';\n        json['攔截原因'] = 'C級高風險呆帳客群，系統鎖定退單';\n        rejectCount++;\n    } else if (credit === 'A' && availableStock >= 0 && orderAmount < 150000) {\n        // A級優良客戶享有 15萬 快速通關履約額度\n        json['決策'] = 'auto';\n        autoCount++;\n    } else if (credit === 'B' && availableStock >= 0 && orderAmount < 30000) {\n        // B級一般客戶維持 3萬 安全通關額度\n        json['決策'] = 'auto';\n        autoCount++;\n    } else {\n        // 額度超標或實體庫存不足，轉入人工例外管理\n        json['決策'] = 'review';\n        json['攔截原因'] = (availableStock < 0) ? '實體庫存不足，需人工調撥排產' : '訂單金額超標，需財務主管覆核';\n        reviewCount++;\n    }\n\n    processedItems.push(json);\n}\n\n// 3. 把戰情統計總數全域注入\nfor (let json of processedItems) {\n    json['總處理筆數'] = processedItems.length;\n    json['直通出貨_Auto'] = autoCount;\n    json['人工審核_Review'] = reviewCount;\n    json['退單攔截_Reject'] = rejectCount;\n    json['狀態'] = \"動態授信與大腦運算完成\";\n}\n\n// 4. 返回乾淨陣列給 Switch 進行物理分流\nreturn processedItems.map(json => ({ json: json }));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        112
+      ],
+      "id": "4e815c15-af12-4ec0-8813-d6ef7663535d",
+      "name": "計算_大腦初始化與金額加總",
+      "alwaysOutputData": false,
+      "executeOnce": false,
+      "retryOnFail": false,
+      "maxTries": 2,
+      "notesInFlow": false
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=【ERP 系統自動通報】待審核訂單：交易風險與授信風控攔截提示 (訂單編號: {{ $json.訂單ID }} / 客戶: {{ $json.客戶ID }})",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 600px; border: 1px solid #e0e0e0; border-top: 4px solid #f39c12; padding: 20px; color: #333;\">\n    <h2 style=\"color: #d35400; margin-top: 0; font-size: 18px;\">⚠️ O2C 流程例外事件：高風險/授信待審核通知</h2>\n    <p>管理階層您好：</p>\n    <p>系統大腦於處理批次訂單時，偵測到一筆例外訂單，已自動啟動 <strong>HITL (Human-in-the-Loop) 人機協作防線</strong>。該訂單目前已暫緩出貨，請主管進行線上授信與履約評估：</p>\n    \n    <table style=\"width: 100%; border-collapse: collapse; margin: 15px 0; background-color: #fbfbfb;\">\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; width: 120px;\">訂單編號：</td><td style=\"padding: 8px; color: #2980b9;\">{{ $json.訂單ID }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold;\">客戶編號：</td><td style=\"padding: 8px;\">{{ $json.客戶ID }} (信用評等: <span style=\"color: #c0392b; font-weight: bold;\">{{ $json.客戶信用評等 }}</span>)</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold;\">產品代碼：</td><td style=\"padding: 8px;\">{{ $json.產品代碼 }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold;\">訂購數量：</td><td style=\"padding: 8px;\">{{ $json.數量 }} PCS</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold;\">交易總金額：</td><td style=\"padding: 8px; color: #27ae60; font-weight: bold;\">NT$ {{ $json.訂單金額 }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold;\">當前可用庫存：</td><td style=\"padding: 8px; color: #7f8c8d;\">{{ $json.可用庫存 }} PCS (期末庫存減安全庫存)</td></tr>\n    </table>\n\n    <div style=\"background-color: #fff9e6; border-left: 4px solid #f1c40f; padding: 12px; margin: 15px 0; font-size: 14px;\">\n        <strong>💡 系統風控大腦診斷提示：</strong><br>\n        1. 若信用評等顯示為「新客戶(未授信)」，代表該客戶尚未通過財務部授信審查，系統依法攔截。<br>\n        2. 若交易總金額大於 NT$ 30,000 或可用庫存低於 0，系統已自動轉入人工彈性排程調度。\n    </div>\n\n    <p style=\"font-size: 13px; color: #7f8c8d; margin-top: 25px;\">※ 本信件由台灣精密零件股份有限公司 BPA 自動化決策中心發送，主管審核後請至後台一鍵釋放訂單。</p>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1536,
+        -224
+      ],
+      "id": "c93e5a0e-aa41-4d0a-b241-bdd8725e7b43",
+      "name": "Gmail_發送主管 HITL 審核信",
+      "webhookId": "6e415169-461f-41d5-b922-ee714ea084d1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=【台灣精密零件】您的訂單受理狀態與變更付款條件重要通知 (訂單編號: {{ $json.訂單ID }})",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 600px; border: 1px solid #e0e0e0; border-top: 4px solid #c0392b; padding: 20px; color: #333;\">\n    <div style=\"text-align: center; margin-bottom: 20px;\">\n        <h3 style=\"color: #c0392b; margin-top: 0; font-size: 18px; letter-spacing: 1px;\">台灣精密零件股份有限公司 — 訂單狀態通報</h3>\n    </div>\n    \n    <p>尊敬的客戶（客戶編號: <strong>{{ $json.客戶ID }}</strong>）您好：</p>\n    <p>非常感謝您對本公司產品（產品代碼: {{ $json.產品代碼 }}）的支持與採購意向。關於您於系統提交之訂單（單號: <span style=\"color: #2980b9; font-weight: bold;\">{{ $json.訂單ID }}</span>），總採購數量為 <strong>{{ $json.數量 }} PCS</strong>，總金額為 <strong>NT$ {{ $json.訂單金額 }}</strong>。</p>\n    \n    <p>非常抱歉通知您，經本公司自動化合規與審查風險管理系統對照「年度客戶貿易授信政策（Credit Policy）」，由於您目前的<strong>約定付款條件或授信評等超出系統自動放行閾值</strong>，本筆採購訂單目前未能通過自動出貨審查。</p>\n\n    <div style=\"background-color: #fdf2f2; border-left: 4px solid #ecf0f1; padding: 15px; margin: 15px 0; font-size: 14px; border-radius: 4px;\">\n        <strong style=\"color: #c0392b;\">🛠️ 替代方案引導（Alternative Fulfillment Options）：</strong><br>\n        為確保您的生產線不因物料中斷受影響，本公司誠摯建議您採取以下變更措施：<br>\n        <span style=\"color: #27ae60; font-weight: bold;\">👉 將既有的遠期信用帳期（如：60天月結）變更為「預付現金 (Cash in Advance)」或「即期信用狀 (L/C)」。</span><br>\n        如您願意變更付款條件，請直接回覆本郵件，我們的專業業務經理將於 1 小時內人工重啟您的訂單並為您特別安排排產。\n    </div>\n\n    <p>造成您的不便，我們深表歉意，並希望能與貴司建立更安全、穩健的長期供應鏈合作夥伴關係。</p>\n    \n    <hr style=\"border: 0; border-top: 1px solid #eeeeee; margin: 20px 0;\">\n    <p style=\"font-size: 12px; color: #95a5a6; line-height: 1.5;\">\n        <strong>台灣精密零件股份有限公司 (Taiwan Precision Components Co., Ltd.)</strong><br>\n        客服信箱：service@tpc.example.com ｜ 總機：+886-3-328-8888<br>\n        技術支援：BPA 營運自動化管理中心\n    </p>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        944,
+        -112
+      ],
+      "id": "225a1bbd-8027-4e29-90f5-49f273fab19e",
+      "name": "Gmail_發送客戶自動退單信",
+      "webhookId": "a7923527-b0ef-4278-909b-8b603ba36496",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=【ERP 營運自動化】批次訂單 O2C 智能審查決策日報 (總處理: {{ $json.總處理筆數 }} 筆 ｜ 直通: {{ $json.直通出貨_Auto }} ｜ 待審: {{ $json.人工審核_Review }} ｜ 攔截: {{ $json.退單攔截_Reject }})",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 650px; border: 1px solid #dcdde1; border-top: 5px solid #2c3e50; padding: 25px; color: #2f3640; background-color: #ffffff; line-height: 1.6;\">\n    \n    <div style=\"border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; margin-bottom: 20px;\">\n        <span style=\"float: right; background-color: #f1f2f6; color: #718093; padding: 4px 10px; font-size: 12px; border-radius: 4px; font-weight: bold;\">系統狀態：{{ $json.狀態 }}</span>\n        <h2 style=\"color: #2c3e50; margin: 0; font-size: 20px; letter-spacing: 0.5px;\">📊 數位轉型 BPA 核心：訂單智能審查決策報告</h2>\n    </div>\n\n    <p>各位營運團隊長官與同仁好：</p>\n    <p>本公司 BPA (業務流程自動化) 風控決策中樞已順利接收來自客戶端/排程系統所提交之大型綜合活頁簿 <strong>SME_Full_Simulation_Dataset_v2.xlsx</strong>，並於毫秒級完成跨組織主檔（客戶信用、即時庫存水位）之關聯比對。以下為本次批次進單的自動化審查與風險處置摘要：</p>\n\n    <div style=\"display: flex; margin: 20px 0; justify-content: space-between; background-color: #f8f9fa; padding: 15px; border-radius: 6px; border: 1px solid #f1f2f6;\">\n        <div style=\"text-align: center; width: 23%;\">\n            <div style=\"font-size: 12px; color: #718093; font-weight: bold;\">總接收筆數</div>\n            <div style=\"font-size: 22px; color: #2c3e50; font-weight: bold; margin-top: 5px;\">{{ $json.總處理筆數 }} <span style=\"font-size: 12px;\">筆</span></div>\n        </div>\n        <div style=\"text-align: center; width: 23%; border-left: 1px solid #dcdde1;\">\n            <div style=\"font-size: 12px; color: #27ae60; font-weight: bold;\">直通出貨 (Auto)</div>\n            <div style=\"font-size: 22px; color: #27ae60; font-weight: bold; margin-top: 5px;\">{{ $json.直通出貨_Auto }} <span style=\"font-size: 12px;\">筆</span></div>\n        </div>\n        <div style=\"text-align: center; width: 23%; border-left: 1px solid #dcdde1;\">\n            <div style=\"font-size: 12px; color: #e67e22; font-weight: bold;\">人工審核 (Review)</div>\n            <div style=\"font-size: 22px; color: #e67e22; font-weight: bold; margin-top: 5px;\">{{ $json.人工審核_Review }} <span style=\"font-size: 12px;\">筆</span></div>\n        </div>\n        <div style=\"text-align: center; width: 23%; border-left: 1px solid #dcdde1;\">\n            <div style=\"font-size: 12px; color: #c0392b; font-weight: bold;\">退單攔截 (Reject)</div>\n            <div style=\"font-size: 22px; color: #c0392b; font-weight: bold; margin-top: 5px;\">{{ $json.退單攔截_Reject }} <span style=\"font-size: 12px;\">筆</span></div>\n        </div>\n    </div>\n\n    <h3 style=\"font-size: 15px; color: #2c3e50; border-left: 4px solid #2980b9; padding-left: 8px; margin-top: 25px;\">📋 供應鏈自動化管道履約現況</h3>\n    <table style=\"width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px;\">\n        <thead>\n            <tr style=\"background-color: #2c3e50; color: #ffffff; text-align: left;\">\n                <th style=\"padding: 10px; border: 1px solid #dcdde1;\">決策分類</th>\n                <th style=\"padding: 10px; border: 1px solid #dcdde1;\">處置筆數</th>\n                <th style=\"padding: 10px; border: 1px solid #dcdde1;\">後續自動化合規管道 (Pipeline)</th>\n            </tr>\n        </thead>\n        <tbody>\n            <tr>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold; color: #27ae60;\">🟢 直通出貨 (Auto)</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold;\">{{ $json.直通出貨_Auto }} 筆</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; color: #7f8c8d;\">符合庫存水位且低於 NT$30,000 門檻。資料已自動匯出為 <strong>出貨 CSV 檔案</strong>，即時拋接給平鎮廠與潭子廠倉儲系統準備撿料。</td>\n            </tr>\n            <tr style=\"background-color: #fbfbfb;\">\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold; color: #e67e22;\">🟡 人工審核 (Review)</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold;\">{{ $json.人工審核_Review }} 筆</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; color: #7f8c8d;\">包含「新客戶(未授信)」、庫存低於安全水位或單筆金額超標者。系統已為每筆例外事件發送 <strong>主管 HITL 審核草稿信</strong>，靜待人工介入釋放。</td>\n            </tr>\n            <tr>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold; color: #c0392b;\">🔴 退單攔截 (Reject)</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; font-weight: bold;\">{{ $json.退單攔截_Reject }} 筆</td>\n                <td style=\"padding: 10px; border: 1px solid #dcdde1; color: #7f8c8d;\">觸發年度風控白名單呆帳防禦（信用評等為 C 級之高風險企業）。系統已強行終止履約，並自動生成 <strong>客氣的付款條件變更草稿信</strong>，導向預付現金方案挽回商機。</td>\n            </tr>\n        </tbody>\n    </table>\n\n    <div style=\"margin-top: 25px; background-color: #edf2f7; border-left: 4px solid #4a5568; padding: 15px; border-radius: 4px;\">\n        <h4 style=\"margin: 0 0 5px 0; color: #2d3748; font-size: 14px;\">📌 審查中心專家下一步行動指引 (Action Item)</h4>\n        <ul style=\"margin: 0; padding-left: 20px; font-size: 13px; color: #4a5568;\">\n            <li>請財務部主管優先登入 Gmail 草稿匣，針對 <strong>{{ $json.人工審核_Review }} 筆</strong> 待審新客進行一鍵授信釋放。</li>\n            <li>直通出貨之 CSV 資料已封裝完畢，請資訊部定期稽核 PostgreSQL 總檔寫入狀態，維持主檔自癒完整性。</li>\n        </ul>\n    </div>\n\n    <hr style=\"border: 0; border-top: 1px solid #eeeeee; margin: 25px 0;\">\n    <p style=\"font-size: 12px; color: #95a5a6; text-align: center; margin: 0; line-height: 1.4;\">\n        <strong>台灣精密零件股份有限公司 ｜ 數位轉型與業務流程自動化中心 (BPA Center)</strong><br>\n        本郵件由系統依據 V8 陣列批次運算引擎自動生成 ｜ 系統佈署環境：Jupyter Pro Loader Server\n    </p>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -32,
+        512
+      ],
+      "id": "c9c5126f-c75b-4b2b-8193-ee7d15e315ff",
+      "name": "Gmail_審單通知",
+      "webhookId": "559594a6-f951-44c9-b570-384e3bcecd46",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "訂單資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -720
+      ],
+      "id": "9da31104-87f9-42c4-9ee0-848407e6cba0",
+      "name": "Extract_訂單分頁"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "庫存資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -384
+      ],
+      "id": "5c8aa59a-8675-48dd-b78c-e1468f958fb6",
+      "name": "Extract_庫存主檔"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "客戶資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -544
+      ],
+      "id": "82d62c08-5893-4b80-aee7-4f1209816af7",
+      "name": "Extract_客戶主檔"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1296,
+        -224
+      ],
+      "id": "6ae83186-138d-4109-b710-40b93547f9b8",
+      "name": "可設定一次過發多少審核信"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        672,
+        -112
+      ],
+      "id": "358c1350-3bee-42b8-afa1-38531fb0fbdb",
+      "name": "可設定一次過發多少自動退單 郵件"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 企業級 ERP 財務結算與庫存扣減引擎 (單輸出完全體) ===\nlet processedItems = [];\n\nfor (let item of $input.all()) {\n    let json = item.json;\n\n    // 1. 執行實時庫存扣減\n    let currentStock = Number(json['期末庫存']) || 0;\n    let safeStock = Number(json['安全庫存']) || 0;\n    let orderQty = Number(json['數量']) || 0;\n    let newStock = currentStock - orderQty;\n    json['更新後庫存水位'] = newStock;\n\n    // 2. 財務結算：總支出(COGS)、總收入(Revenue) 與 交易毛利分析\n    let unitCost = Number(json['單位成本']) || 0; \n    let unitPrice = Number(json['單價']) || 0;\n    \n    json['銷貨收入(Revenue)'] = orderQty * unitPrice;\n    json['銷貨成本(COGS)'] = orderQty * unitCost; // 這就是該筆訂單的總支出\n    json['交易毛利(Gross Profit)'] = json['銷貨收入(Revenue)'] - json['銷貨成本(COGS)'];\n    \n    // 計算毛利率\n    if (json['銷貨收入(Revenue)'] > 0) {\n        json['毛利率(Margin %)'] = ((json['交易毛利(Gross Profit)'] / json['銷貨收入(Revenue)']) * 100).toFixed(2) + '%';\n    } else {\n        json['毛利率(Margin %)'] = '0%';\n    }\n\n    // 3. 雙式簿記會計傳票過帳標籤\n    json['借方科目(Dr.)'] = \"應收帳款(AR) / 銷貨成本(COGS)\";\n    json['貸方科目(Cr.)'] = \"銷貨收入(Rev) / 存貨(INV)\";\n    json['過帳狀態'] = \"GL_POSTED\";\n    \n    // 4. ⭐ 智能補貨標籤：為後續的畫布 Filter 節點提供完美的辨識暗號\n    if (newStock < safeStock) {\n        json['需要補貨'] = true;\n        json['建議採購量(PR)'] = safeStock - newStock + 150; // 補足缺口並加上安全安全存量\n    } else {\n        json['需要補貨'] = false;\n        json['建議採購量(PR)'] = 0;\n    }\n\n    processedItems.push({ json: json });\n}\n\n// 完美返回單一陣列，再也不會觸發 Return items properly 錯誤！\nreturn processedItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -512
+      ],
+      "id": "cc64f633-d77c-40b9-9b64-58be014c5546",
+      "name": "ERP_庫存扣減與應收帳款過帳",
+      "alwaysOutputData": false,
+      "executeOnce": false,
+      "retryOnFail": false
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "產品代碼",
+        "joinMode": "enrichInput1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -768,
+        -368
+      ],
+      "id": "dd7db078-c1f2-4525-9fb2-ae9617803ca1",
+      "name": "Merge_對接即時庫存"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "產品代碼",
+        "joinMode": "enrichInput1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -528,
+        -112
+      ],
+      "id": "571ecc31-7445-4b48-a424-eba20d7b1394",
+      "name": "Merge_對接產品成本"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "產品資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -208
+      ],
+      "id": "c0de3db8-9b90-404e-aa3c-1e795a98daa0",
+      "name": "Extract_產品主檔"
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=[BPA供應鏈風控] 智慧採購補貨與斷料防禦預警：商品「{{ $json[\"產品名稱\"] }}」已低於安全庫存水位",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 650px; margin: 0 auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 10px rgba(0,0,0,0.05);\">\n    <div style=\"background-color: #e74c3c; color: white; padding: 20px; text-align: center;\">\n        <h2 style=\"margin: 0; font-size: 20px; letter-spacing: 1px;\">⚠️ BPA 供應鏈斷料防禦即時警報</h2>\n        <p style=\"margin: 5px 0 0 0; opacity: 0.9; font-size: 13px;\">自動化管線編號：P2P-Restock-Workflow-V3</p>\n    </div>\n    \n    <div style=\"padding: 25px; color: #333333; background-color: #ffffff; line-height: 1.6;\">\n        <p style=\"margin-top: 0; font-size: 15px; font-weight: bold;\">採購部同仁 您好：</p>\n        <p style=\"font-size: 14px; color: #555555;\">\n            本研究自研之低程式碼智慧大腦於背景執行批量交易流掃描時，偵測到<b>現存庫存水位已擊穿安全防禦線</b>。系統已依據公司既定政策，自動完成了「供應商智能媒合」，請即刻啟動採購程序以防生產線斷料。\n        </p>\n        \n        <h3 style=\"font-size: 14px; color: #2c3e50; border-left: 4px solid #e74c3c; padding-left: 8px; margin-top: 25px;\">📊 斷料風險商品摘要</h3>\n        <table style=\"width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px;\">\n            <thead>\n                <tr style=\"background-color: #f8f9fa; border-bottom: 2px solid #e0e0e0;\">\n                    <th style=\"padding: 10px; text-align: left; color: #666666;\">項目</th>\n                    <th style=\"padding: 10px; text-align: left; color: #666666;\">系統即時數據 / 風控標籤</th>\n                </tr>\n            </thead>\n            <tbody>\n                <tr style=\"border-bottom: 1px solid #eeeeee;\">\n                    <td style=\"padding: 10px; font-weight: bold; color: #555555;\">商品代碼 / 名稱</td>\n                    <td style=\"padding: 10px; color: #c0392b; font-weight: bold;\">[{{ $json[\"產品代碼\"] }}] {{ $json[\"產品名稱\"] }}</td>\n                </tr>\n                <tr style=\"border-bottom: 1px solid #eeeeee;\">\n                    <td style=\"padding: 10px; font-weight: bold; color: #555555;\">目前可用庫存</td>\n                    <td style=\"padding: 10px; color: #e74c3c; font-weight: bold;\">{{ $json[\"可用庫存\"] }} PCS</td>\n                </tr>\n                <tr style=\"border-bottom: 1px solid #eeeeee;\">\n                    <td style=\"padding: 10px; font-weight: bold; color: #555555;\">安全庫存控制線</td>\n                    <td style=\"padding: 10px; color: #27ae60;\">{{ $json[\"安全庫存\"] }} PCS</td>\n                </tr>\n                <tr style=\"border-bottom: 1px solid #eeeeee;\">\n                    <td style=\"padding: 10px; font-weight: bold; color: #555555;\">智能媒合供應商</td>\n                    <td style=\"padding: 10px; color: #2980b9; font-weight: bold;\">{{ $json[\"供應商名稱\"] }} (ID: {{ $json[\"供應商ID\"] }})</td>\n                </tr>\n            </tbody>\n        </table>\n        \n        <div style=\"margin-top: 25px; padding: 15px; background-color: #fef9f8; border-radius: 6px; border: 1px dashed #fadbd8;\">\n            <p style=\"margin: 0; font-size: 13px; color: #78281f; font-weight: bold;\">💡 系統戰略建議行動方案：</p>\n            <ol style=\"margin: 5px 0 0 0; padding-left: 20px; font-size: 13px; color: #78281f;\">\n                <li>請即刻向媒合供應商 <b>{{ $json[\"供應商名稱\"] }}</b> 發出詢價單 (RFQ)。建議採購量為：<b>{{ $json[\"建議採購量(PR)\"] }} PCS</b>。</li>\n                <li>此筆交易已由地端 Docker 微服務引擎鎖定，待採購單號回填後，系統將自動恢復出貨鏈閉環。</li>\n            </ol>\n        </div>\n    </div>\n    \n    <div style=\"background-color: #f4f6f7; padding: 15px; text-align: center; font-size: 11px; color: #7f8c8d; border-top: 1px solid #eeeeee;\">\n        本郵件由精密零件 ERP 自動化中樞（n8n 地端微服務平台）自動發送，請勿直接回覆。\n    </div>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1088,
+        -1328
+      ],
+      "id": "d9ae46bd-0196-4f37-93fe-7a23041a89cc",
+      "name": "Gmail_發送採購部_智慧補貨警報",
+      "webhookId": "6e415169-461f-41d5-b922-ee714ea084d1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "911152c4-ac48-4a27-a41d-fb7b74f6de9a",
+              "leftValue": "={{ $json.需要補貨 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        384,
+        -768
+      ],
+      "id": "9cdf1f43-c59b-42ed-a8f2-8aa8918436e1",
+      "name": "Filter_庫存不足攔截器"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        832,
+        -1088
+      ],
+      "id": "0a814967-fc4d-4dc6-aae9-032dfa20a164",
+      "name": "Limit_僅放行單封補貨報告"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "供應商ID",
+        "joinMode": "enrichInput1",
+        "options": {
+          "multipleMatches": "all"
+        }
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        624,
+        -960
+      ],
+      "id": "a40ad1b7-a08d-42aa-8314-269416a6e828",
+      "name": "Merge_智能媒合供應商"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "供應商名錄"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -1040
+      ],
+      "id": "a22cf1f3-b6c0-4a44-91e1-26456c3e513f",
+      "name": "Extract_供應商名錄"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "fieldsToMatchString": "產品代碼",
+        "joinMode": "enrichInput1",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        944,
+        -544
+      ],
+      "id": "9df63216-b25d-4908-a951-0ebf756dd54e",
+      "name": "Merge_對接出貨物流"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        1232,
+        -544
+      ],
+      "id": "3c89049a-4c6a-4e81-830a-f98f4ca6dbc3",
+      "name": "Limit_僅生成示範外發發票"
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=【台灣精密零件】您的訂單已拋接物流履約！電子發票遞送通知 (發票號: {{ $json.發票流水號 }} ｜ 訂單編號: {{ $json.訂單ID }})",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 650px; border: 1px solid #dcdde1; border-top: 5px solid #2ecc71; padding: 25px; color: #2f3640; background-color: #ffffff; line-height: 1.6;\">\n    \n    <div style=\"text-align: center; border-bottom: 2px dashed #dcdde1; padding-bottom: 20px; margin-bottom: 20px;\">\n        <h2 style=\"color: #2ecc71; margin: 0; font-size: 22px; letter-spacing: 1px;\">COMMERCIAL INVOICE & SHIPPING ADVICE</h2>\n        <span style=\"font-size: 12px; color: #718093;\">台灣精密零件股份有限公司 ｜ 電子銷貨證明與出貨通知單</span>\n    </div>\n\n    <p>尊敬的客戶（客戶編號: <strong>{{ $json.客戶ID }}</strong>）您好：</p>\n    <p>誠摯感謝您提交的採購訂單。本公司 ERP 智能履約中心已於毫秒間完成款項帳務過帳與平鎮自動化物流倉儲調度。您的訂單已正式進入打包出貨管道（Pipeline），以下為您的<strong>【含稅應收電子發票】</strong>與物流配置摘要：</p>\n\n    <h3 style=\"font-size: 14px; color: #2c3e50; border-left: 4px solid #2ecc71; padding-left: 8px; margin-top: 25px; margin-bottom: 10px;\">🧾 電子發票與過帳明細 (GL Summary)</h3>\n    <table style=\"width: 100%; border-collapse: collapse; font-size: 13px; background-color: #fbfbfb;\">\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; color: #718093; width: 130px;\">法定發票流水號</td><td style=\"padding: 8px; font-weight: bold; color: #2980b9;\">{{ $json.發票流水號 }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; color: #718093;\">交易對應帳期</td><td style=\"padding: 8px;\">{{ $json[\"會計期間\"] }} (付款條件: 依約定授信放行)</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; color: #718093;\">訂購產品品項</td><td style=\"padding: 8px; font-weight: bold;\">{{ $json.產品代碼 }} — {{ $json.產品名稱 }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; color: #718093;\">實時交付數量</td><td style=\"padding: 8px;\">{{ $json.數量 }} PCS</td></tr>\n        <tr style=\"border-bottom: 2px solid #2ecc71; background-color: #f0fbf4;\"><td style=\"padding: 8px; font-weight: bold; color: #27ae60; font-size: 14px;\">應收銷貨總金額</td><td style=\"padding: 8px; color: #27ae60; font-weight: bold; font-size: 16px;\">NT$ {{ $json[\"銷貨收入(Revenue)\"] }} (含稅)</td></tr>\n    </table>\n\n    <h3 style=\"font-size: 14px; color: #2c3e50; border-left: 4px solid #3498db; padding-left: 8px; margin-top: 25px; margin-bottom: 10px;\">🚚 物流與供應鏈履約追蹤</h3>\n    <table style=\"width: 100%; border-collapse: collapse; font-size: 13px; background-color: #f5f9fc;\">\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 8px; font-weight: bold; color: #718093; width: 130px;\">指定合約物流商</td><td style=\"padding: 8px; font-weight: bold; color: #2980b9;\">{{ $json[\"物流商\"] || \"新竹物流 (跨國特快車隊)\" }}</td></tr>\n        <tr style=\"border-bottom: 2px solid #3498db;\"><td style=\"padding: 8px; font-weight: bold; color: #718093;\">本批運費預估</td><td style=\"padding: 8px; color: #3498db; font-weight: bold;\">NT$ {{ $json[\"運費\"] || \"250\" }} (由本公司年度貿易條款全額補貼)</td></tr>\n    </table>\n\n    <div style=\"margin-top: 20px; background-color: #fafafa; border-left: 4px solid #2ecc71; padding: 12px; font-size: 12px; color: #718093;\">\n        ※ 本信件隨附之銷貨明細已同步完成雙式記帳傳票過帳（借記：應收帳款，貸記：銷貨收入）。貨物包裹追蹤電子標籤（EDI）已拋接至第三方倉庫，預計將於 24 小時內送達您指定的交貨據點。\n    </div>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1536,
+        -544
+      ],
+      "id": "365e0ee2-91c1-4fd0-889f-32063fea9470",
+      "name": "Gmail_寄送客戶發票與出貨通知",
+      "webhookId": "6e415169-461f-41d5-b922-ee714ea084d1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "出貨資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1360,
+        -880
+      ],
+      "id": "192d8795-4fb9-42da-9703-8932fd80f34e",
+      "name": "Extract_出貨資料"
+    },
+    {
+      "parameters": {
+        "sendTo": "example@gmail.com",
+        "subject": "=【ERP 系統自動通報】待審核訂單：交易風險與授信風控攔截提示 (訂單編號: {{ $json.訂單ID }} / 客戶: {{ $json.客戶ID }})",
+        "message": "=<div style=\"font-family: 'Microsoft JhengHei', Arial, sans-serif; max-width: 650px; border: 1px solid #dcdde1; border-top: 5px solid #e67e22; padding: 25px; color: #2f3640; background-color: #ffffff;\">\n    <div style=\"border-bottom: 2px solid #f5f6fa; padding-bottom: 15px; margin-bottom: 20px;\">\n        <span style=\"float: right; background-color: #fff3cd; color: #d35400; padding: 4px 10px; font-size: 12px; border-radius: 4px; font-weight: bold;\">P2P 供應商自動決策</span>\n        <h2 style=\"color: #d35400; margin: 0; font-size: 18px;\">【MRP 物料需求計畫】智慧媒合詢價單 (RFQ) 提示</h2>\n    </div>\n\n    <p>採購同仁您好：</p>\n    <p>系統大腦已針對本次扣減後「庫存水位觸底」之物料，實時交叉檢索企業內部<strong>【供應商名錄主檔】</strong>。系統已自動排除非合規廠商，精準媒合出該品項之最佳策略供應商。請即刻依據下方合約條件向對口窗口發起詢價程序：</p>\n\n    <h3 style=\"font-size: 14px; color: #2c3e50; border-left: 4px solid #e67e22; padding-left: 8px; margin-top: 20px;\">🏢 智慧媒合供應商資訊看板</h3>\n    <table style=\"width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px;\">\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 10px; font-weight: bold; color: #718093; width: 140px;\">媒合供應商名稱</td><td style=\"padding: 10px; font-weight: bold; color: #2980b9;\">{{ $json[\"供應商名稱\"] }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 10px; font-weight: bold; color: #718093;\">指定原廠聯絡人</td><td style=\"padding: 10px;\">{{ $json[\"聯絡人\"] || \"採購合同約定窗口\" }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 10px; font-weight: bold; color: #718093;\">合約前置交期 (Lead Time)</td><td style=\"padding: 10px; color: #c0392b; font-weight: bold;\">{{ $json[\"前置時間(天)\"] || \"3\" }} 天 (請注意斷料風險)</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee;\"><td style=\"padding: 10px; font-weight: bold; color: #718093;\">預警觸底物料</td><td style=\"padding: 10px;\">{{ $json[\"產品代碼\"] }} — {{ $json[\"產品名稱\"] }}</td></tr>\n        <tr style=\"border-bottom: 1px solid #eeeeee; background-color: #fffdf6;\"><td style=\"padding: 10px; font-weight: bold; color: #d35400;\">當前現貨水位</td><td style=\"padding: 10px; font-weight: bold; color: #c0392b;\">{{ $json[\"更新後庫存水位\"] }} PCS</td></tr>\n        <tr style=\"border-bottom: 2px solid #dcdde1; background-color: #edfaf1;\"><td style=\"padding: 10px; font-weight: bold; color: #27ae60;\">建議申購量 (PR Qty)</td><td style=\"padding: 10px; color: #27ae60; font-weight: bold; font-size: 15px;\">{{ $json[\"建議採購量(PR)\"] }} PCS</td></tr>\n    </table>\n\n    <div style=\"margin-top: 20px; background-color: #fafafa; border: 1px solid #e0e0e0; padding: 15px; font-size: 12px; border-radius: 4px;\">\n        <strong>💡 採購合規防禦提示：</strong><br>\n        本品項之當前現貨水位為 {{ $json[\"更新後庫存水位\"] }} PCS，已嚴重低於安全庫存控制閾值（{{ $json[\"安全庫存\"] }} PCS）。依據本公司採購政策，系統已預先將對應會計期間與發票流水號 <span style=\"font-family: monospace; font-weight: bold;\">{{ $json[\"發票流水號\"] }}</span> 進行鏈結。請點擊 ERP 後台一鍵轉為正式採購訂單（PO）。\n    </div>\n</div>",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1088,
+        -1088
+      ],
+      "id": "b6f1eddb-e817-457e-bb77-2ef6ef7644f4",
+      "name": "Gmail_發送採購詢價單(RFQ)",
+      "webhookId": "6e415169-461f-41d5-b922-ee714ea084d1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        -256,
+        512
+      ],
+      "id": "34a51324-446d-4bc4-b463-5a64b0b3b26b",
+      "name": "審單通知"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.limit",
+      "typeVersion": 1,
+      "position": [
+        832,
+        -1328
+      ],
+      "id": "75c9d0ef-65e8-4243-aa49-c3d6764ed23f",
+      "name": "Limit_發送採購部_智慧補貨警報"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=CRM新客開戶與授信表_{{ $now.format('yyyyMMdd') }}_.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1024,
+        368
+      ],
+      "id": "a709faaf-283f-4a66-9ad5-2a0183d06b78",
+      "name": "convert_新客建檔名單XLSX"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=人工覆核戰情表_{{ $now.format('yyyyMMdd') }}_.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1168,
+        576
+      ],
+      "id": "040e7a58-1617-4365-8cad-18ee7636b112",
+      "name": "convert_待審核清單XLSX"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=呆帳攔截報告_{{ $now.format('yyyyMMdd') }}.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1280,
+        768
+      ],
+      "id": "0e223d42-d6f6-4bff-9e9d-07677f89615b",
+      "name": "convert_退單清單XLSX"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 報表改名引擎：人工覆核戰情表 ===\n\n// 1. 抓取今天日期 (格式: 20260517)\nconst today = new Date();\nconst dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;\n\n// 2. 幫 XLSX 二進位檔案蓋上專屬檔名\nfor (let item of $input.all()) {\n    if (item.binary && item.binary.data) {\n        item.binary.data.fileName = `台灣精密零件_人工覆核戰情表_${dateStr}.xlsx`;\n    }\n}\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        576
+      ],
+      "id": "30eb5502-5047-4aae-94e0-8bad39740a2d",
+      "name": "人工覆核戰情表"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 報表改名引擎：CRM 新客建檔 ===\n\n// 1. 抓取今天日期 (格式: 20260517)\nconst today = new Date();\nconst dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;\n\n// 2. 幫 XLSX 二進位檔案蓋上專屬檔名\nfor (let item of $input.all()) {\n    if (item.binary && item.binary.data) {\n        item.binary.data.fileName = `台灣精密零件_CRM新客開戶與授信總表_${dateStr}.xlsx`;\n    }\n}\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1264,
+        368
+      ],
+      "id": "33ddc1ce-08d7-4fc5-8213-248e38017a19",
+      "name": "CRM新客開戶與授信表"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 報表改名引擎：呆帳攔截報告 ===\n\n// 1. 抓取今天日期 (格式: 20260517)\nconst today = new Date();\nconst dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;\n\n// 2. 幫 XLSX 二進位檔案蓋上專屬檔名\nfor (let item of $input.all()) {\n    if (item.binary && item.binary.data) {\n        item.binary.data.fileName = `台灣精密零件_財務部_呆帳攔截與退單報告_${dateStr}.xlsx`;\n    }\n}\n\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1520,
+        768
+      ],
+      "id": "8a062472-b9fc-4d63-a841-daf6c66a1022",
+      "name": "呆帳攔截報告"
+    },
+    {
+      "parameters": {
+        "jsCode": "let reportData = [];\nfor (let item of $input.all()) {\n    let j = item.json;\n    // 重組並只保留高階主管需要的關鍵欄位 (順序即為 Excel 欄位順序)\n    reportData.push({\n        json: {\n            \"訂單編號\": j['訂單ID'],\n            \"客戶編號\": j['客戶ID'],\n            \"信用評等\": j['客戶信用評等'],\n            \"攔截原因\": j['攔截原因'] || '需人工覆核',\n            \"產品代碼\": j['產品代碼'],\n            \"訂單數量\": j['數量'],\n            \"訂單總額(NT$)\": j['訂單金額'],\n            \"當前可用庫存\": j['可用庫存']\n        }\n    });\n}\nreturn reportData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        576
+      ],
+      "id": "20062ab9-4469-41a6-8b1a-63b12672de3b",
+      "name": "Code_清洗_人工覆核欄位"
+    },
+    {
+      "parameters": {
+        "jsCode": "let reportData = [];\nfor (let item of $input.all()) {\n    let j = item.json;\n    reportData.push({\n        json: {\n            \"退單編號\": j['訂單ID'],\n            \"高風險客戶\": j['客戶ID'],\n            \"信用評等\": j['客戶信用評等'],\n            \"退回原因\": j['攔截原因'],\n            \"攔截金額(NT$)\": j['訂單金額'],\n            \"風險防禦結果\": \"已成功攔截出貨，避免呆帳損失\"\n        }\n    });\n}\nreturn reportData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1024,
+        768
+      ],
+      "id": "23b15107-f71d-4602-b2bf-31dfbc70f489",
+      "name": "Code_清洗_退單報告欄位"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "n8ntest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1936,
+        -688
+      ],
+      "id": "46c6239c-e51a-4170-b0b7-a48125b8c01d",
+      "name": "Webhook_檔案輸入",
+      "webhookId": "d1c5d719-aa62-48cc-b4ad-2f1d06b5d767"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=台灣精密零件_BI高階戰情庫_{{ $now.format('yyyyMMdd') }}.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        192,
+        512
+      ],
+      "id": "cef69294-cbbe-45db-89db-4fcbde37f5b1",
+      "name": "convert_寫入BI戰情總檔XLSX"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === n8n 企業級 CRM 欄位清洗引擎 (黑盒子戰情探針版) ===\nlet reportData = [];\nlet sampleKeys = [];\nlet sampleData = null;\n\nfor (let item of $input.all()) {\n    let j = item.json;\n    \n    // 記錄第一筆資料的結構，用來診斷\n    if (sampleKeys.length === 0) {\n        sampleKeys = Object.keys(j);\n        sampleData = j;\n    }\n\n    let isNewCustomer = false;\n    if (!j['信用評等'] || j['信用評等'] === '新客戶(未授信)' || j['信用評等'] === '') {\n        isNewCustomer = true;\n    }\n    if (j['攔截原因'] && String(j['攔截原因']).includes('缺乏歷史交易紀錄')) {\n        isNewCustomer = true;\n    }\n    if (j['客戶ID'] && String(j['客戶ID']).startsWith('CUST99')) {\n        isNewCustomer = true;\n    }\n                        \n    if (isNewCustomer) {\n        reportData.push({\n            json: {\n                \"客戶編號\": j['客戶ID'] || \"未知新客戶\",\n                \"KYC開戶狀態\": \"待全套審查\",\n                \"首筆交易單號\": j['訂單ID'] || \"無\",\n                \"首筆採購金額(NT$)\": j['訂單金額'] || 0,\n                \"指定對口聯絡人\": j['聯絡人'] || '請業務部速向客戶索取',\n                \"ERP授信建議\": \"請業務部建立正式 Master Data，並設定初始信用額度\"\n            }\n        });\n    }\n}\n\n// 🎯 專家級診斷機制：如果經過天羅地網還是 0 筆，直接輸出診斷報告！\nif (reportData.length === 0) {\n    return [{\n        json: {\n            \"📊_系統診斷結果\": \"執行失敗！353筆待審單中，100%完全不包含任何新客戶特徵。\",\n            \"🔍_核心病因\": \"新客戶在前面的 Merge 節點或 Webhook 源頭就已經消失了。\",\n            \"💡_總裁建議排查步驟\": \"請立刻執行下方的『第二階段』與『第三階段』物理排查。\",\n            \"填補提示_目前收到的前置欄位範例\": sampleKeys,\n            \"第一筆資料盲測\": {\n                \"訂單ID\": sampleData ? sampleData['訂單ID'] : \"無\",\n                \"客戶ID\": sampleData ? sampleData['客戶ID'] : \"無\",\n                \"信用評等_現況\": sampleData ? sampleData['信用評等'] : \"無\"\n            }\n        }\n    }];\n}\n\nreturn reportData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        368
+      ],
+      "id": "3c751b37-35aa-410b-b21d-e1ffd0e401be",
+      "name": "Code_清洗_新客建檔欄位"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "財務資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1568,
+        160
+      ],
+      "id": "08db107c-d0f6-4e4e-a290-d9c972208b21",
+      "name": "Extract_財務資料"
+    },
+    {
+      "parameters": {
+        "operation": "xls",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "人力資源"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1632,
+        352
+      ],
+      "id": "bee8be9e-e11b-43f3-b4ad-7ca87b042641",
+      "name": "Extract_人力資源"
+    },
+    {
+      "parameters": {
+        "jsCode": "let reportData = [];\n\nfor (let item of $input.all()) {\n    let j = item.json;\n    \n    let arRatio = Number(j['逾期應收帳款比例(%)']) || 0;\n    let cashFlow = Number(j['現金流(百萬元)']) || 0;\n    \n    // 財務風控條件：現金流為負，或逾期帳款比例 > 12%\n    if (cashFlow < 0 || arRatio > 12) {\n        reportData.push({\n            json: {\n                \"財報月份\": j['月份'],\n                \"營收表現(百萬元)\": j['總營收(百萬元)'],\n                \"當月現金流(百萬元)\": cashFlow,\n                \"AR逾期比例(%)\": arRatio + \"%\",\n                \"ERP系統診斷\": (cashFlow < 0) ? \"🚨 現金流面臨枯竭，建議暫緩採購支出\" : \"⚠️ 應收帳款逾期嚴重，需立即啟動法務催收(Dunning)程序\"\n            }\n        });\n    }\n}\nreturn reportData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        160
+      ],
+      "id": "5fd9856f-d882-4043-a15c-b66404322961",
+      "name": "Code_AR逾期與現金流稽核"
+    },
+    {
+      "parameters": {
+        "jsCode": "let reportData = [];\n\nfor (let item of $input.all()) {\n    let j = item.json;\n    \n    // 只掃描還沒離職的在職員工\n    if (String(j['是否離職']).toLowerCase() !== 'true') {\n        let overtime = Number(j['加班時數/月']) || 0;\n        let salary = Number(j['薪資(新台幣/月)']) || 0;\n        let tenure = Number(j['年資']) || 0;\n        \n        let riskLevel = \"正常\";\n        let action = \"持續觀察\";\n        let shouldReport = false;\n        \n        // 勞基法合規防禦：加班超過 30 小時\n        if (overtime >= 30) {\n            riskLevel = \"🚨 高風險 (過勞/勞基法違規邊緣)\";\n            action = \"HR 需立即強制排休，並調查部門人力配置\";\n            shouldReport = true;\n        } \n        // 離職率防禦：年資大於3年但薪水偏低的高級工程師\n        else if (tenure >= 3 && j['職稱'] === '高級工程師' && salary < 45000) {\n            riskLevel = \"⚠️ 中高風險 (薪資結構倒掛)\";\n            action = \"建議主管啟動留才面談，評估專案調薪\";\n            shouldReport = true;\n        }\n        \n        if (shouldReport) {\n            reportData.push({\n                json: {\n                    \"員工代號\": j['員工ID'],\n                    \"所屬部門\": j['部門'],\n                    \"職位\": j['職稱'],\n                    \"月加班時數\": overtime,\n                    \"當前薪資(NT$)\": salary,\n                    \"系統風險判定\": riskLevel,\n                    \"HR建議處置\": action\n                }\n            });\n        }\n    }\n}\nreturn reportData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1392,
+        352
+      ],
+      "id": "87e6898e-d8cf-409b-aaeb-f6d14bd7be23",
+      "name": "Code_HR加班與離職預警"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=HCM人資風險控管表_{{ $now.format('yyyyMMdd') }}.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1168,
+        352
+      ],
+      "id": "7103b9ac-42fe-4ac6-a474-6deea09bf81d",
+      "name": "convert_HR風控"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=財務部AR與現金流警報_{{ $now.format('yyyyMMdd') }}.xlsx"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        -1152,
+        160
+      ],
+      "id": "95d32662-a394-4507-83f8-b139505fc1d6",
+      "name": "convert_財務警報XLSX"
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\nconst dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;\n\nfor (let item of $input.all()) {\n    if (item.binary && item.binary.data) {\n        item.binary.data.fileName = `台灣精密零件_財務部_現金流與AR逾期警報_${dateStr}.xlsx`;\n    }\n}\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -944,
+        160
+      ],
+      "id": "d799a598-4814-474a-b1ee-8e1f80bf1ced",
+      "name": "財務部AR與現金流警報"
+    },
+    {
+      "parameters": {
+        "jsCode": "const today = new Date();\nconst dateStr = `${today.getFullYear()}${String(today.getMonth() + 1).padStart(2, '0')}${String(today.getDate()).padStart(2, '0')}`;\n\nfor (let item of $input.all()) {\n    if (item.binary && item.binary.data) {\n        item.binary.data.fileName = `台灣精密零件_HCM人資與勞基法風險控管表_${dateStr}.xlsx`;\n    }\n}\nreturn $input.all();"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -944,
+        352
+      ],
+      "id": "d7fe47b3-b0af-45ba-9cc0-e4acc2dc275d",
+      "name": "HCM人資風險控管表"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 1040,
+        "width": 1600,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2640,
+        -1072
+      ],
+      "typeVersion": 1,
+      "id": "fb312c9e-c9ea-4094-bb06-ff3916a8f6c7",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "# 軌道一：\n# 【Switch_ERP履約分流】 ───► (三車道營運例外分流) \n# 【孔 0: auto (自動直通出貨車道)】  ─► ✉️[Gmail_寄送發票物流單]  🛑[Filter_庫存不足攔截]   ─► ✉️[Gmail_發送詢價單RFQ]",
+        "height": 224,
+        "width": 1520,
+        "color": "#725637"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -144,
+        -1664
+      ],
+      "typeVersion": 1,
+      "id": "48eeebc8-ef86-48b7-827c-7cc1b1418061",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "# O2C 和 ERP 模擬公司整體流程運行",
+        "height": 80,
+        "width": 608,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2096,
+        -1200
+      ],
+      "typeVersion": 1,
+      "id": "8be2613a-a0ea-4bcb-85a6-76bf015ffcbe",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 384,
+        "width": 1040,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1792,
+        128
+      ],
+      "typeVersion": 1,
+      "id": "f02ac74e-1ea2-4281-b736-8ac9eab6fa83",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "# 軌道二：【FICO 財務部 — 企業現金流與 AR(應收帳款) 帳齡安全稽核】",
+        "height": 80,
+        "width": 1136,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1824,
+        32
+      ],
+      "typeVersion": 1,
+      "id": "f5b1a7b8-6236-4bdb-8b31-74966f20bfb0",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 352,
+        "width": 1024,
+        "color": "#703838"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -608,
+        352
+      ],
+      "typeVersion": 1,
+      "id": "19841eb5-05f0-4ca6-b7c5-cdde1c3658ab",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "content": "# 軌道四：【BI 決策層 — 企業高階數據資產變現】\n# 📊【Respond to Webhook】 ──► 📄【convert_寫入BI戰情總檔XLSX】 ──► (Gmail_審單通知)",
+        "height": 192,
+        "width": 1024,
+        "color": "#703838"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -608,
+        736
+      ],
+      "typeVersion": 1,
+      "id": "7a253e17-3554-43fe-a33e-25547dd78e71",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 1488,
+        "width": 2000,
+        "color": "#725637"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -160,
+        -1392
+      ],
+      "typeVersion": 1,
+      "id": "437c0083-ac45-4798-8a51-07e2cbfb94bd",
+      "name": "Sticky Note9"
+    },
+    {
+      "parameters": {
+        "content": "# 軌道三：【HCM 人資部 — 勞基法過勞合規與高階留才預警】",
+        "height": 80,
+        "width": 1008,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1776,
+        528
+      ],
+      "typeVersion": 1,
+      "id": "39858c18-8599-4b73-9a7e-a198f6e7d638",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 784,
+        "width": 1488,
+        "color": "#725637"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        608,
+        240
+      ],
+      "typeVersion": 1,
+      "id": "19b4bb97-9418-42a5-9e9e-a99e2a8f8af1",
+      "name": "Sticky Note11"
+    },
+    {
+      "parameters": {
+        "content": "# 台灣精密零件有限公司",
+        "height": 80,
+        "width": 400,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2576,
+        -1200
+      ],
+      "typeVersion": 1,
+      "id": "4e3ceea8-edc4-4a03-b48c-af1d397ca656",
+      "name": "Sticky Note14"
+    },
+    {
+      "parameters": {
+        "content": "# 額外添加",
+        "height": 80,
+        "width": 192,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2016,
+        288
+      ],
+      "typeVersion": 1,
+      "id": "fa0d9dc6-e453-468d-a9d9-71a36983f3fd",
+      "name": "Sticky Note15"
+    },
+    {
+      "parameters": {
+        "content": "# 軌道一\n# 【孔 1: review (人工例外審查車道)】─► 🏁[人工覆核戰情表]  ─► 🏁[CRM新客開戶總表]\n# 【孔 2: reject (呆帳呆資攔截車道)】🏁[呆帳攔截報告]",
+        "height": 192,
+        "width": 1472,
+        "color": "#725637"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        624,
+        1056
+      ],
+      "typeVersion": 1,
+      "id": "b7d64eb4-1fcb-4f19-955b-d0f14b71e16a",
+      "name": "Sticky Note16"
+    },
+    {
+      "parameters": {
+        "content": "# 整體的工作流概括以下的工作\n# 1.涵蓋訂單接收信用評等決策樹分流 (Auto/Review/Reject)、\n# 2.庫存即時扣減\n# 3.財務過帳 (COGS/Revenue/AR)\n# 4.自動補貨詢價 (RFQ)\n# 5.發票/出貨通知\n# 6.額外的 HR (過勞/離職率) 與財務 (現金流/AR帳齡) 異常預警探針。",
+        "height": 416,
+        "width": 1152,
+        "color": 2
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2560,
+        -1680
+      ],
+      "typeVersion": 1,
+      "id": "7284aff2-d9ba-449d-8dc2-8d6efb044c6b",
+      "name": "Sticky Note17"
+    },
+    {
+      "parameters": {
+        "content": "# 🟢路線 A (Auto 直通出貨) ",
+        "height": 80,
+        "width": 454,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1056,
+        -672
+      ],
+      "typeVersion": 1,
+      "id": "06ba77ca-4013-4831-a9d1-f347cf1912fc",
+      "name": "Sticky Note18"
+    },
+    {
+      "parameters": {
+        "content": "# 🟡路線 B (Review 人工審核)",
+        "height": 80,
+        "width": 502,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1216,
+        -320
+      ],
+      "typeVersion": 1,
+      "id": "4302b984-f6c7-4a7e-996b-0f8f3a6a31d9",
+      "name": "Sticky Note19"
+    },
+    {
+      "parameters": {
+        "content": "# 🔴路線 C (Reject 呆帳退單)",
+        "height": 80,
+        "width": 502,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1104,
+        928
+      ],
+      "typeVersion": 1,
+      "id": "3b4cd808-55b2-4e29-8392-db36ff40e156",
+      "name": "Sticky Note20"
+    },
+    {
+      "parameters": {
+        "content": "# 🔵路線 D (決策高層與其他防禦)",
+        "height": 80,
+        "width": 582,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1584,
+        640
+      ],
+      "typeVersion": 1,
+      "id": "e2624b1d-14b5-4ae2-b9cc-7ef4e7df4769",
+      "name": "Sticky Note21"
+    },
+    {
+      "parameters": {
+        "content": "# 公司資料庫導入檔案",
+        "height": 80,
+        "width": 368,
+        "color": "#030303"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2528,
+        -192
+      ],
+      "typeVersion": 1,
+      "id": "a0a57583-1e86-4c87-ade5-f1308cb7a4da",
+      "name": "Sticky Note13"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 384,
+        "width": 464,
+        "color": "#030303"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2576,
+        -592
+      ],
+      "typeVersion": 1,
+      "id": "09e18560-52f1-4497-af28-ed731e382495",
+      "name": "Sticky Note12"
+    },
+    {
+      "parameters": {
+        "content": "# gmail通知新訂單 入庫/內部檔案讀取\n",
+        "height": 80,
+        "width": 608,
+        "color": "#030303"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2624,
+        -960
+      ],
+      "typeVersion": 1,
+      "id": "d0695e2b-d3da-4ddd-8a9f-e91a50cb9bdf",
+      "name": "Sticky Note10"
+    },
+    {
+      "parameters": {
+        "content": "",
+        "height": 224,
+        "width": 464,
+        "color": "#030303"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2576,
+        -848
+      ],
+      "typeVersion": 1,
+      "id": "3906d9ec-8083-472b-9f85-f5dacf1b6407",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "sheetName": "庫存資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2304,
+        -384
+      ],
+      "id": "55a9410a-9c6d-4f52-9d68-442c9c5f1904",
+      "name": "Extract_內部庫存主檔"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "sheetName": "客戶資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2304,
+        -576
+      ],
+      "id": "1107c3aa-bb47-418f-a2de-03c270e125e1",
+      "name": "Extract_內部客戶主檔"
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:\\Users\\echo6\\Downloads\\模擬公司-20250829T033655Z-1-001\\中小企業的數位化與自動化流程模擬資料\\庫存資料.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2496,
+        -384
+      ],
+      "id": "b21c8c6d-cd04-440d-af25-f9d41b9e98dd",
+      "name": "Read_內部庫存主檔"
+    },
+    {
+      "parameters": {
+        "fileSelector": "C:\\Users\\echo6\\Downloads\\模擬公司-20250829T033655Z-1-001\\中小企業的數位化與自動化流程模擬資料\\SME_Full_Simulation_Dataset_v2",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2496,
+        -576
+      ],
+      "id": "c22f0092-341d-418f-8750-597a74977bba",
+      "name": "Read_內部客戶主檔"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            },
+            {}
+          ]
+        },
+        "simple": false,
+        "filters": {},
+        "options": {
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -2496,
+        -800
+      ],
+      "id": "94f513d3-3796-4414-a38e-7ea63d8a2f20",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "HfjEfb45iXj5UkLx",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "attachment_0",
+        "options": {
+          "sheetName": "訂單資料"
+        }
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2304,
+        -800
+      ],
+      "id": "ad0a87d2-396c-49f1-9497-d5b6b60c1e51",
+      "name": "Extract_解析信件附件"
+    },
+    {
+      "parameters": {
+        "content": "# https://github.com/EchoChan14",
+        "height": 80,
+        "width": 608,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -896,
+        -1184
+      ],
+      "typeVersion": 1,
+      "id": "cbee7aa7-be80-4355-a0ca-153476b97971",
+      "name": "Sticky Note22"
+    },
+    {
+      "parameters": {
+        "content": "https://github.com/EchoChan14",
+        "height": 80,
+        "width": 262,
+        "color": 6
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2640,
+        -112
+      ],
+      "typeVersion": 1,
+      "id": "d48a124e-6b20-4e83-85c3-df8fe18f207e",
+      "name": "Sticky Note23"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Merge_對接客戶授信": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接即時庫存",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        [
+          {
+            "node": "審單通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch_ERP履約分流": {
+      "main": [
+        [
+          {
+            "node": "ERP_庫存扣減與應收帳款過帳",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "可設定一次過發多少審核信",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code_清洗_人工覆核欄位",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code_清洗_新客建檔欄位",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "可設定一次過發多少自動退單 郵件",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code_清洗_退單報告欄位",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "計算_大腦初始化與金額加總": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Switch_ERP履約分流",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail_發送主管 HITL 審核信": {
+      "main": [
+        []
+      ]
+    },
+    "Gmail_發送客戶自動退單信": {
+      "main": [
+        []
+      ]
+    },
+    "Gmail_審單通知": {
+      "main": [
+        [
+          {
+            "node": "convert_寫入BI戰情總檔XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_訂單分頁": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接客戶授信",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_客戶主檔": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接客戶授信",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Extract_庫存主檔": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接即時庫存",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "可設定一次過發多少審核信": {
+      "main": [
+        [
+          {
+            "node": "Gmail_發送主管 HITL 審核信",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "可設定一次過發多少自動退單 郵件": {
+      "main": [
+        [
+          {
+            "node": "Gmail_發送客戶自動退單信",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ERP_庫存扣減與應收帳款過帳": {
+      "main": [
+        [
+          {
+            "node": "Filter_庫存不足攔截器",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge_對接出貨物流",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge_對接即時庫存": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接產品成本",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_產品主檔": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接產品成本",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge_對接產品成本": {
+      "main": [
+        [
+          {
+            "node": "計算_大腦初始化與金額加總",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter_庫存不足攔截器": {
+      "main": [
+        [
+          {
+            "node": "Merge_智能媒合供應商",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit_僅放行單封補貨報告": {
+      "main": [
+        [
+          {
+            "node": "Gmail_發送採購詢價單(RFQ)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_供應商名錄": {
+      "main": [
+        [
+          {
+            "node": "Merge_智能媒合供應商",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Limit_僅生成示範外發發票": {
+      "main": [
+        [
+          {
+            "node": "Gmail_寄送客戶發票與出貨通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge_對接出貨物流": {
+      "main": [
+        [
+          {
+            "node": "Limit_僅生成示範外發發票",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge_智能媒合供應商": {
+      "main": [
+        [
+          {
+            "node": "Limit_僅放行單封補貨報告",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Limit_發送採購部_智慧補貨警報",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_出貨資料": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接出貨物流",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "審單通知": {
+      "main": [
+        [
+          {
+            "node": "Gmail_審單通知",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limit_發送採購部_智慧補貨警報": {
+      "main": [
+        [
+          {
+            "node": "Gmail_發送採購部_智慧補貨警報",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert_待審核清單XLSX": {
+      "main": [
+        [
+          {
+            "node": "人工覆核戰情表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert_退單清單XLSX": {
+      "main": [
+        [
+          {
+            "node": "呆帳攔截報告",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert_新客建檔名單XLSX": {
+      "main": [
+        [
+          {
+            "node": "CRM新客開戶與授信表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_清洗_人工覆核欄位": {
+      "main": [
+        [
+          {
+            "node": "convert_待審核清單XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_清洗_退單報告欄位": {
+      "main": [
+        [
+          {
+            "node": "convert_退單清單XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook_檔案輸入": {
+      "main": [
+        [
+          {
+            "node": "Extract_訂單分頁",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_客戶主檔",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_庫存主檔",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_產品主檔",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_供應商名錄",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_出貨資料",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_財務資料",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract_人力資源",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_清洗_新客建檔欄位": {
+      "main": [
+        [
+          {
+            "node": "convert_新客建檔名單XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_財務資料": {
+      "main": [
+        [
+          {
+            "node": "Code_AR逾期與現金流稽核",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_人力資源": {
+      "main": [
+        [
+          {
+            "node": "Code_HR加班與離職預警",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_AR逾期與現金流稽核": {
+      "main": [
+        [
+          {
+            "node": "convert_財務警報XLSX",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_HR加班與離職預警": {
+      "main": [
+        [
+          {
+            "node": "convert_HR風控",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "convert_財務警報XLSX": {
+      "main": [
+        [
+          {
+            "node": "財務部AR與現金流警報",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "財務部AR與現金流警報": {
+      "main": [
+        []
+      ]
+    },
+    "convert_HR風控": {
+      "main": [
+        [
+          {
+            "node": "HCM人資風險控管表",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_內部庫存主檔": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接客戶授信",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Extract_內部客戶主檔": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接客戶授信",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Read_內部庫存主檔": {
+      "main": [
+        [
+          {
+            "node": "Extract_內部庫存主檔",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read_內部客戶主檔": {
+      "main": [
+        [
+          {
+            "node": "Extract_內部客戶主檔",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract_解析信件附件",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract_解析信件附件": {
+      "main": [
+        [
+          {
+            "node": "Merge_對接客戶授信",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "fe616bc7-1efc-4bba-860c-93ee41547bdd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "a2b5bcff6e9d69218a6caccb655aa131b9d637390b1c781b90dc2f8b42176df4"
+  },
+  "id": "crquBOPGCTuq1Kfi",
+  "tags": []
+}
