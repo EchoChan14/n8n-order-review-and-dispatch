@@ -1,5 +1,5 @@
 # 🏢 Automated O2C Order Review & Dynamic Dispatch System (with HITL)
-### 基於 n8n 低代碼大腦與 ERP 跨主檔對齊之訂單自動審核、動態分流與人機協作系統
+### 基於 n8n 低代碼與 ERP 跨主檔對齊之訂單自動審核、動態分流與人機協作系統
 
 [![Type](https://img.shields.io/badge/Project-Master_Thesis_%7C_%E7%A2%A9%E5%A3%AB%E8%AB%96%E6%96%87%E7%A0%94%E7%A9%B6-blue?style=for-the-badge)]()
 [![Workflow](https://img.shields.io/badge/Workflow-n8n-EA4B71?style=for-the-badge&logo=n8n&logoColor=white)](https://n8n.io/)
@@ -89,6 +89,43 @@
 
 <img width="644" height="567" alt="Screenshot 2026-09-11 192915" src="https://github.com/user-attachments/assets/2ad41ee1-7fed-48e2-be66-742db6251c04" />
 
+---
+## 系統架構與資料流 (System Architecture)
+
+```mermaid
+flowchart TD
+    subgraph Data_Input ["1. 數據傳輸層 (Python Client)"]
+        A1[SME 綜合營運總檔\n13 個分頁 XLSX] -->|Multipart/form-data| A2[Python 批次傳輸腳本\nweb載入資料庫.ipynb]
+        A2 -->|POST /n8ntest| B1[Webhook 接收端點]
+    end
+
+    subgraph n8n_Core ["2. 核心大腦決策層 (n8n Workflow Engine)"]
+        B1 --> B2[Extract from File\n八大主檔並行解構]
+        B2 --> B3[Merge 串聯節點\n關聯客戶授信 / 庫存 / 成本]
+        B3 --> B4[JavaScript 決策引擎\n訂單金額 / 可用庫存 / 信用評等比對]
+        B4 --> B5{Switch 履約分流}
+    end
+
+    subgraph Fulfillment ["3. 三車道自動化處置管道"]
+        B5 -->|🟢 auto| C1[庫存扣減 & 應收帳款 GL 過帳]
+        C1 --> C2[寄送出貨通知 & 商業電子發票]
+        C1 --> C3{可用庫存 < 安全水位?}
+        C3 -->|是| C4[智慧媒合供應商名錄] --> C5[寄送採購詢價單 RFQ]
+
+        B5 -->|🟡 review| D1[清洗人工覆核欄位]
+        D1 --> D2[產出覆核戰情表 XLSX & CRM 新客總表]
+        D1 --> D3[Gmail 寄送主管 HITL 審核信]
+
+        B5 -->|🔴 reject| E1[呆帳防護攔截]
+        E1 --> E2[產出財務退單報告 XLSX]
+        E1 --> E3[寄送變更付款條件引導信]
+    end
+
+    subgraph Defense ["4. 營運風控預警層"]
+        B2 --> F1[財務稽核：AR 逾期 > 12% / 負現金流] --> F2[產出現金流警報 XLSX]
+        B2 --> G1[人資稽核：加班 > 30h / 薪資倒掛] --> G2[產出 HCM 風控表 XLSX]
+    end
+```
 ---
 
 ## 🛠️ 環境需求
